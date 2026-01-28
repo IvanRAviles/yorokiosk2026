@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <title>Menú</title>
+</head>
+<body>
+  <div id="initLoader"><div class="spinner"></div></div>
+  <div class="menu-layout" id="main" style="display:none">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <img src="assets/logo-mark.png" style="height:40px">
+        <div><div style="font-weight:900">Yorokobi</div><div id="ctx" style="font-size:12px;opacity:0.7">...</div></div>
+      </div>
+      <div id="cats" style="padding:10px;overflow:auto;flex:1"></div>
+    </aside>
+    <main class="main-panel">
+      <div id="grid" class="item-grid"></div>
+    </main>
+    <section class="cart-panel">
+      <div class="sidebar-head"><b>Carrito</b><button id="clr" class="btn ghost" style="margin-left:auto;min-height:30px;font-size:12px">Vaciar</button></div>
+      <div id="cart" style="padding:15px;overflow:auto;flex:1"></div>
+      <div style="padding:15px;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:space-between">
+        <span>Total</span><span id="tot" style="font-weight:900;font-size:20px">$0.00</span>
+      </div>
+      <div style="padding:15px;display:flex;flex-direction:column;gap:10px">
+        <textarea id="note" class="field" style="height:60px;resize:none" placeholder="Notas..."></textarea>
+        <button id="sub" class="btn">ENVIAR</button>
+        <button id="back" class="btn secondary">VOLVER</button>
+      </div>
+    </section>
+  </div>
+  <script type="module">
+    import { getEnv, getClient } from "./js/supabase.js";
+    let cart=[], items=[], cats=[];
+    const env=getEnv(), supabase=getClient(), ctx=JSON.parse(sessionStorage.getItem('order_context')||'null');
+    
+    window.onload = async () => {
+      if(!supabase || !ctx) return location.href='index.html';
+      document.getElementById('ctx').textContent = ctx.type==='dine_in' ? 'Mesa '+ctx.table : 'Llevar';
+      await loadData();
+      document.getElementById('initLoader').style.display='none';
+      document.getElementById('main').style.display='grid';
+    };
+
+    const fmt = n => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(n);
+
+    async function loadData() {
+      try {
+        const [c, i] = await Promise.all([
+          supabase.from('menu_categories').select('*').eq('is_active',true).order('sort_order'),
+          supabase.from('menu_items').select('*').eq('is_active',true)
+        ]);
+        cats = c.data||[]; items = (i.data||[]).map(x=>({...x, price: x.price_cents?x.price_cents/100:(x.price||0)}));
+        
+        const cl = document.getElementById('cats');
+        cats.forEach(k => {
+          const b = document.createElement('button');
+          b.className = 'field'; b.style.textAlign='left'; b.style.cursor='pointer';
+          b.textContent = k.name; b.onclick = () => render(k.id);
+          cl.appendChild(b);
+        });
+        if(cats.length) render(cats[0].id);
+        cart = JSON.parse(localStorage.getItem('yorokobi_cart')||'[]'); drawCart();
+      } catch(e) { alert('Error carga'); }
+    }
+
+    function render(cid) {
+      const g = document.getElementById('grid'); g.innerHTML='';
+      items.filter(x=>x.category_id===cid).forEach(i => {
+        const d = document.createElement('div');
+        d.className='item-card';
+        d.innerHTML = `<div style="font-weight:900">${i.name}</div><div style="font-size:12px;opacity:0.7;flex:1">${i.description||''}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <span style="font-weight:900;font-size:18px">${fmt(i.price)}</span>
+          <button class="btn" style="width:auto;min-height:40px;padding:0 15px">+</button>
+        </div>`;
+        d.querySelector('button').onclick = () => {
+          const x = cart.find(z=>z.id===i.id);
+          if(x) x.qty++; else cart.push({...i, qty:1});
+          drawCart();
+        };
+        g.appendChild(d);
+      });
+    }
+
+    function drawCart() {
+      const c = document.getElementById('cart'); c.innerHTML='';
+      let tot=0;
+      if(!cart.length) c.innerHTML='<div style="text-align:center;padding:20px;opacity:0.5">Vacío</div>';
+      cart.forEach((i, idx) => {
+        tot += i.price*i.qty;
+        const d = document.createElement('div');
+        d.style.cssText = 'padding:10px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px';
+        d.innerHTML = `<div style="display:flex;justify-content:space-between"><b>${i.name}</b><span>${fmt(i.price*i.qty)}</span></div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:5px">
+          <button class="btn secondary" style="width:30px;min-height:30px;padding:0" onclick="window.upd(${idx},-1)">-</button>
+          <span>${i.qty}</span>
+          <button class="btn secondary" style="width:30px;min-height:30px;padding:0" onclick="window.upd(${idx},1)">+</button>
+        </div>`;
+        c.appendChild(d);
+      });
+      document.getElementById('tot').textContent = fmt(tot);
+      localStorage.setItem('yorokobi_cart', JSON.stringify(cart));
+    }
+
+    window.upd = (i,d) => { cart[i].qty+=d; if(cart[i].qty<=0) cart.splice(i,1); drawCart(); };
+    document.getElementById('clr').onclick = () => { if(confirm('¿Borrar?')) { cart=[]; drawCart(); } };
+    document.getElementById('back').onclick = () => { if(cart.length && !confirm('¿Salir?')) return; location.href='index.html'; };
+    
+    document.getElementById('sub').onclick = async () => {
+      if(!cart.length) return alert('Vacío');
+      const b = document.getElementById('sub'); b.disabled=true; b.textContent='...';
+      try {
+        const { data: o, error: e } = await supabase.from('orders').insert({
+          location_id: env.locId, order_type: ctx.type, table_number: ctx.table?parseInt(ctx.table):null,
+          customer_note: document.getElementById('note').value, status: 'pending'
+        }).select().single();
+        if(e) throw e;
+        await supabase.from('order_items').insert(cart.map(x=>({order_id:o.id, menu_item_id:x.id, qty:x.qty, unit_price:x.price})));
+        alert('Enviado'); localStorage.removeItem('yorokobi_cart'); location.href='index.html';
+      } catch(x) { alert('Error: '+x.message); b.disabled=false; b.textContent='ENVIAR'; }
+    };
+  </script>
+</body>
+</html>

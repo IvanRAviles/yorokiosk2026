@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <title>Yorokobi</title>
+</head>
+<body>
+  <div id="initLoader"><div class="spinner"></div></div>
+  <div id="hotspot" style="position:fixed;top:0;left:0;width:80px;height:80px;z-index:99"></div>
+  
+  <div class="kiosk-shell" id="main" style="display:none">
+    <div class="card welcome-box">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:30px">
+        <img src="assets/logo-mark.png" style="height:100px;border-radius:50%;border:2px solid #333;padding:10px;background:#000">
+        <h1 style="font-size:32px;font-weight:900">Yorokobi Sushi</h1>
+        <div id="badge" class="hidden" style="padding:5px 15px;background:#333;border-radius:20px;font-size:14px"></div>
+      </div>
+      <button id="btnNew" class="btn">ORDEN NUEVA</button>
+      <div id="err" class="hidden" style="color:#e63946;margin-top:20px">No Configurado</div>
+    </div>
+  </div>
+
+  <div id="modalType" class="modal-overlay hidden">
+    <div class="card modal">
+      <h2 style="text-align:center">¿Dónde comerás?</h2>
+      <div style="display:flex;gap:15px">
+        <button id="btnHere" class="btn">Aquí</button>
+        <button id="btnGo" class="btn secondary">Llevar</button>
+      </div>
+      <button class="btn ghost" style="margin-top:15px" onclick="this.closest('.modal-overlay').classList.add('hidden')">Cancelar</button>
+    </div>
+  </div>
+
+  <div id="modalTable" class="modal-overlay hidden">
+    <div class="card modal">
+      <h2 style="text-align:center">Número de Mesa</h2>
+      <input id="tblIn" type="number" class="field" style="font-size:24px;text-align:center">
+      <button id="btnTbl" class="btn">Confirmar</button>
+    </div>
+  </div>
+
+  <div id="modalPin" class="modal-overlay hidden">
+    <div class="card modal">
+      <div id="pinDisp" class="pin-screen"></div>
+      <div class="pin-pad">
+        <button class="pin-key" data-k="1">1</button><button class="pin-key" data-k="2">2</button><button class="pin-key" data-k="3">3</button>
+        <button class="pin-key" data-k="4">4</button><button class="pin-key" data-k="5">5</button><button class="pin-key" data-k="6">6</button>
+        <button class="pin-key" data-k="7">7</button><button class="pin-key" data-k="8">8</button><button class="pin-key" data-k="9">9</button>
+        <button class="pin-key" data-k="C">C</button><button class="pin-key" data-k="0">0</button><button class="pin-key" data-k="OK">OK</button>
+      </div>
+      <button class="btn ghost" style="margin-top:10px" onclick="location.reload()">Cerrar</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { hasValidEnv, getEnv, verifyPin } from "./js/supabase.js";
+    import { registerSW } from "./js/pwa.js";
+    registerSW(); localStorage.removeItem("yorokobi_cart");
+
+    window.onload = () => {
+      document.getElementById('initLoader').style.display='none';
+      document.getElementById('main').style.display='flex';
+      const e = getEnv();
+      if(hasValidEnv()) {
+        document.getElementById('badge').textContent = e.locName;
+        document.getElementById('badge').classList.remove('hidden');
+      } else {
+        document.getElementById('err').classList.remove('hidden');
+        document.getElementById('btnNew').disabled = true;
+      }
+    };
+
+    let taps=0, timer, pin="";
+    document.getElementById('hotspot').onclick = () => {
+      taps++; clearTimeout(timer); timer=setTimeout(()=>taps=0, 1000);
+      if(taps===5) { document.getElementById('modalPin').classList.remove('hidden'); taps=0; }
+    };
+
+    document.querySelectorAll('.pin-key').forEach(b => b.onclick = () => {
+      const k = b.dataset.k;
+      if(k==='C') pin="";
+      else if(k==='OK') {
+        if(verifyPin(pin, getEnv().locName)) location.href='ajustes.html';
+        else { pin=""; alert('Mal PIN'); }
+      } else if(pin.length<4) pin+=k;
+      document.getElementById('pinDisp').textContent = "•".repeat(pin.length);
+    });
+
+    document.getElementById('btnNew').onclick = () => document.getElementById('modalType').classList.remove('hidden');
+    document.getElementById('btnGo').onclick = () => {
+      sessionStorage.setItem('order_context', JSON.stringify({type:'take_out', table:null}));
+      location.href='menu.html';
+    };
+    document.getElementById('btnHere').onclick = () => {
+      document.getElementById('modalType').classList.add('hidden');
+      document.getElementById('modalTable').classList.remove('hidden');
+      setTimeout(()=>document.getElementById('tblIn').focus(), 100);
+    };
+    document.getElementById('btnTbl').onclick = () => {
+      const t = document.getElementById('tblIn').value;
+      if(t>0) {
+        sessionStorage.setItem('order_context', JSON.stringify({type:'dine_in', table:t}));
+        location.href='menu.html';
+      }
+    };
+  </script>
+</body>
+</html>
