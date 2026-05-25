@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <title>Menú</title>
+</head>
+<body>
+  <div id="initLoader"><div class="spinner"></div></div>
+
+  <div class="menu-layout" id="main" style="display:none">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <img src="assets/logo-mark.png" style="height:40px" alt="Logo">
+        <div>
+          <div style="font-weight:900">Yorokobi</div>
+          <div id="ctx" style="font-size:12px;opacity:0.7">...</div>
+        </div>
+      </div>
+      <div id="cats" style="padding:10px;overflow:auto;flex:1"></div>
+    </aside>
+
+    <main class="main-panel">
+      <div id="grid" class="item-grid"></div>
+    </main>
+
+    <section class="cart-panel">
+      <div class="sidebar-head">
+        <b>Carrito</b>
+        <button id="clr" class="btn ghost" style="margin-left:auto;min-height:30px;font-size:12px" type="button">Vaciar</button>
+      </div>
+
+      <div id="cart" style="padding:15px;overflow:auto;flex:1"></div>
+
+      <div style="padding:15px;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:space-between">
+        <span>Total</span>
+        <span id="tot" style="font-weight:900;font-size:20px">$0.00</span>
+      </div>
+
+      <div style="padding:15px;display:flex;flex-direction:column;gap:10px">
+        <textarea id="note" class="field" style="height:60px;resize:none" placeholder="Notas..."></textarea>
+        <button id="sub" class="btn" type="button">ENVIAR</button>
+        <button id="back" class="btn secondary" type="button">VOLVER</button>
+      </div>
+    </section>
+  </div>
+
+  <script type="module">
+    import { getEnv, getClient } from "./js/supabase.js";
+    import { registerSW } from "./js/pwa.js";
+    registerSW();
+
+    const els = {
+      loader: document.getElementById("initLoader"),
+      main: document.getElementById("main"),
+      ctx: document.getElementById("ctx"),
+      cats: document.getElementById("cats"),
+      grid: document.getElementById("grid"),
+      cart: document.getElementById("cart"),
+      total: document.getElementById("tot"),
+      note: document.getElementById("note"),
+      submit: document.getElementById("sub"),
+      clear: document.getElementById("clr"),
+      back: document.getElementById("back")
+    };
+
+    const env = getEnv();
+    const supabase = getClient();
+    let ctx = null;
+
+    try {
+      ctx = JSON.parse(sessionStorage.getItem("order_context") || "null");
+    } catch {
+      ctx = null;
+    }
+
+    let cart = [];
+    let items = [];
+    let categories = [];
+
+    const fmt = (n) => new Intl.NumberFormat("es-MX", {
+      style: "currency",
+      currency: "MXN"
+    }).format(Number(n || 0));
+
+    function showError(message) {
+      alert(message);
+    }
+
+    function saveCart() {
+      localStorage.setItem("yorokobi_cart", JSON.stringify(cart));
+    }
+
+    function loadCart() {
+      try {
+        const saved = JSON.parse(localStorage.getItem("yorokobi_cart") || "[]");
+        cart = Array.isArray(saved) ? saved : [];
+      } catch {
+        cart = [];
+      }
+    }
+
+    window.addEventListener("load", async () => {
+      if (!supabase || !env.locId || !ctx || !ctx.type) {
+        location.href = "index.html";
+        return;
+      }
+
+      els.ctx.textContent = ctx.type === "dine_in" ? `Mesa ${ctx.table}` : "Llevar";
+
+      try {
+        loadCart();
+        await loadData();
+      } catch (err) {
+        console.error(err);
+        els.grid.innerHTML = "";
+        const box = document.createElement("div");
+        box.style.cssText = "padding:20px;opacity:0.85";
+        box.textContent = "No se pudo cargar el menú. Revisa la configuración o permisos de Supabase.";
+        els.grid.appendChild(box);
+      } finally {
+        els.loader.style.display = "none";
+        els.main.style.display = "grid";
+      }
+    });
+
+    function getField(obj, keys, fallback = "") {
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== null && obj[key] !== undefined && obj[key] !== "") {
+          return obj[key];
+        }
+      }
+      return fallback;
+    }
+
+    function getItemName(item) {
+      return String(getField(item, ["name", "item_name", "title", "nombre"], "Sin nombre"));
+    }
+
+    function getItemDescription(item) {
+      return String(getField(item, ["description", "desc", "descripcion", "details", "notes"], ""));
+    }
+
+    function getItemPrice(item) {
+      const cents = getField(item, ["price_cents", "precio_centavos", "cents"], null);
+      if (cents !== null && cents !== "") {
+        const centsNumber = Number(cents);
+        if (Number.isFinite(centsNumber)) return centsNumber / 100;
+      }
+
+      const value = getField(item, ["price", "precio", "unit_price", "amount", "cost"], 0);
+      const number = Number(value);
+      return Number.isFinite(number) ? number : 0;
+    }
+
+    function getItemCategoryId(item) {
+      return String(getField(item, ["category_id", "menu_category_id", "cat_id"], ""));
+    }
+
+    function getCategoryName(category) {
+      return String(getField(category, ["name", "category_name", "title", "nombre"], "Sin nombre"));
+    }
+
+    function getCategorySort(category) {
+      const raw = getField(category, ["sort_order", "position", "order", "orden"], 0);
+      const number = Number(raw);
+      return Number.isFinite(number) ? number : 0;
+    }
+
+    async function loadData() {
+      const [catResult, itemResult] = await Promise.all([
+        supabase
+          .from("menu_categories")
+          .select("*")
+          .eq("is_active", true),
+        supabase
+          .from("menu_items")
+          .select("*")
+          .eq("is_active", true)
+      ]);
+
+      if (catResult.error) throw catResult.error;
+      if (itemResult.error) throw itemResult.error;
+
+      categories = (catResult.data || [])
+        .map((category) => ({
+          ...category,
+          name: getCategoryName(category),
+          sort_order: getCategorySort(category)
+        }))
+        .sort((a, b) => (Number(a.sort_order || 0) - Number(b.sort_order || 0)) || String(a.name).localeCompare(String(b.name)));
+
+      items = (itemResult.data || [])
+        .map((item) => ({
+          ...item,
+          name: getItemName(item),
+          description: getItemDescription(item),
+          price: getItemPrice(item),
+          category_id: getItemCategoryId(item)
+        }))
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+      renderCategories();
+
+      if (categories.length) renderCategory(categories[0].id);
+      else els.grid.textContent = "No hay categorías activas.";
+
+      drawCart();
+    }
+
+    function renderCategories() {
+      els.cats.innerHTML = "";
+
+      categories.forEach((category) => {
+        const btn = document.createElement("button");
+        btn.className = "field";
+        btn.type = "button";
+        btn.style.textAlign = "left";
+        btn.style.cursor = "pointer";
+        btn.textContent = category.name;
+        btn.addEventListener("click", () => renderCategory(category.id));
+        els.cats.appendChild(btn);
+      });
+    }
+
+    function renderCategory(categoryId) {
+      els.grid.innerHTML = "";
+
+      const visibleItems = items.filter((item) => item.category_id === categoryId);
+
+      if (!visibleItems.length) {
+        const empty = document.createElement("div");
+        empty.style.opacity = "0.7";
+        empty.style.padding = "20px";
+        empty.textContent = "No hay artículos en esta categoría.";
+        els.grid.appendChild(empty);
+        return;
+      }
+
+      visibleItems.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "item-card";
+
+        const name = document.createElement("div");
+        name.style.fontWeight = "900";
+        name.textContent = item.name;
+
+        const desc = document.createElement("div");
+        desc.style.fontSize = "12px";
+        desc.style.opacity = "0.7";
+        desc.style.flex = "1";
+        desc.textContent = item.description || "";
+
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.justifyContent = "space-between";
+        row.style.alignItems = "center";
+        row.style.marginTop = "10px";
+
+        const price = document.createElement("span");
+        price.style.fontWeight = "900";
+        price.style.fontSize = "18px";
+        price.textContent = fmt(item.price);
+
+        const add = document.createElement("button");
+        add.className = "btn";
+        add.type = "button";
+        add.style.width = "auto";
+        add.style.minHeight = "40px";
+        add.style.padding = "0 15px";
+        add.textContent = "+";
+        add.addEventListener("click", () => addToCart(item));
+
+        row.append(price, add);
+        card.append(name, desc, row);
+        els.grid.appendChild(card);
+      });
+    }
+
+    function addToCart(item) {
+      const found = cart.find((x) => x.id === item.id);
+      if (found) found.qty += 1;
+      else {
+        cart.push({
+          id: item.id,
+          name: item.name,
+          price: item.price,
+          qty: 1
+        });
+      }
+      drawCart();
+    }
+
+    function drawCart() {
+      els.cart.innerHTML = "";
+      let total = 0;
+
+      if (!cart.length) {
+        const empty = document.createElement("div");
+        empty.style.textAlign = "center";
+        empty.style.padding = "20px";
+        empty.style.opacity = "0.5";
+        empty.textContent = "Vacío";
+        els.cart.appendChild(empty);
+      }
+
+      cart.forEach((item, index) => {
+        total += Number(item.price || 0) * Number(item.qty || 0);
+
+        const box = document.createElement("div");
+        box.style.cssText = "padding:10px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px";
+
+        const top = document.createElement("div");
+        top.style.display = "flex";
+        top.style.justifyContent = "space-between";
+
+        const title = document.createElement("b");
+        title.textContent = item.name;
+
+        const line = document.createElement("span");
+        line.textContent = fmt(Number(item.price || 0) * Number(item.qty || 0));
+
+        top.append(title, line);
+
+        const controls = document.createElement("div");
+        controls.style.cssText = "display:flex;gap:10px;align-items:center;margin-top:5px";
+
+        const minus = document.createElement("button");
+        minus.className = "btn secondary";
+        minus.type = "button";
+        minus.style.cssText = "width:30px;min-height:30px;padding:0";
+        minus.textContent = "-";
+        minus.addEventListener("click", () => updateQty(index, -1));
+
+        const qty = document.createElement("span");
+        qty.textContent = String(item.qty);
+
+        const plus = document.createElement("button");
+        plus.className = "btn secondary";
+        plus.type = "button";
+        plus.style.cssText = "width:30px;min-height:30px;padding:0";
+        plus.textContent = "+";
+        plus.addEventListener("click", () => updateQty(index, 1));
+
+        controls.append(minus, qty, plus);
+        box.append(top, controls);
+        els.cart.appendChild(box);
+      });
+
+      els.total.textContent = fmt(total);
+      saveCart();
+    }
+
+    function updateQty(index, delta) {
+      if (!cart[index]) return;
+      cart[index].qty += delta;
+      if (cart[index].qty <= 0) cart.splice(index, 1);
+      drawCart();
+    }
+
+    els.clear.addEventListener("click", () => {
+      if (confirm("¿Borrar carrito?")) {
+        cart = [];
+        drawCart();
+      }
+    });
+
+    els.back.addEventListener("click", () => {
+      if (cart.length && !confirm("¿Salir sin enviar?")) return;
+      location.href = "index.html";
+    });
+
+    els.submit.addEventListener("click", async () => {
+      if (!cart.length) {
+        showError("Carrito vacío.");
+        return;
+      }
+
+      els.submit.disabled = true;
+      els.submit.textContent = "...";
+
+      try {
+        const orderPayload = {
+          location_id: env.locId,
+          order_type: ctx.type,
+          table_number: ctx.table ? parseInt(ctx.table, 10) : null,
+          customer_note: els.note.value.trim() || null,
+          status: "pending"
+        };
+
+        const { data: order, error: orderError } = await supabase
+          .from("orders")
+          .insert(orderPayload)
+          .select("id")
+          .single();
+
+        if (orderError) throw orderError;
+        if (!order || !order.id) throw new Error("No se pudo crear la orden.");
+
+        const rows = cart.map((item) => ({
+          order_id: order.id,
+          menu_item_id: item.id,
+          qty: item.qty,
+          unit_price: item.price
+        }));
+
+        const { error: itemError } = await supabase
+          .from("order_items")
+          .insert(rows);
+
+        if (itemError) throw itemError;
+
+        alert("Enviado.");
+        localStorage.removeItem("yorokobi_cart");
+        sessionStorage.removeItem("order_context");
+        location.href = "index.html";
+      } catch (err) {
+        showError("Error enviando orden. Avisa al personal.");
+        console.error(err);
+        els.submit.disabled = false;
+        els.submit.textContent = "ENVIAR";
+      }
+    });
+  </script>
+</body>
+</html>

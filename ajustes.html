@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Ajustes - Yorokobi</title>
+  <link rel="stylesheet" href="assets/css/styles.css" />
+</head>
+<body>
+  <div id="initLoader">
+    <div class="spinner"></div>
+    <div style="opacity:0.8;">Cargando...</div>
+    <div id="jsError" style="color:#ff6b6b; margin-top:20px; text-align:center; display:none;"></div>
+  </div>
+
+  <div class="kiosk-shell" id="mainContent" style="display:none;">
+    <form id="configForm" class="card" style="width: min(500px, 94vw); padding: 24px;">
+      <div style="text-align:center; margin-bottom: 24px;">
+        <img src="assets/logo-mark.png" onerror="this.style.display='none'" style="width:80px; height:80px; border-radius:50%; border:2px solid #333;" />
+        <h1 style="font-size:24px; margin-top:10px;">Configuración</h1>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div>
+          <label style="display:block; margin-bottom:8px; font-weight:bold;">Supabase URL</label>
+          <input id="sbUrl" class="field" type="url" placeholder="https://PROJECT-ID.supabase.co" 
+                 autocorrect="off" autocapitalize="off" spellcheck="false" required />
+        </div>
+        <div>
+          <label style="display:block; margin-bottom:8px; font-weight:bold;">Supabase Anon Key</label>
+          <input id="sbKey" class="field" type="text" placeholder="eyJ... o sb_..." 
+                 autocorrect="off" autocapitalize="off" spellcheck="false" required />
+        </div>
+        <div>
+          <label style="display:block; margin-bottom:8px; font-weight:bold;">Sucursal</label>
+          <select id="locSelect" class="field" style="height:54px;" disabled>
+            <option value="">(Conecta primero)</option>
+          </select>
+        </div>
+        <div id="status" class="status-message hidden"></div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:10px;">
+          <button id="btnTest" type="button" class="btn secondary">Conectar</button>
+          <button id="btnSave" type="submit" class="btn" disabled>Guardar</button>
+        </div>
+        <button id="btnBack" type="button" class="btn secondary" style="margin-top:-4px;">Volver</button>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    window.onerror = function(msg, url, line) {
+      document.getElementById('jsError').style.display = 'block';
+      document.getElementById('jsError').textContent = `Error: ${msg} L${line}`;
+    };
+  </script>
+  <script type="module">
+    import { getEnv, saveEnv, getClient } from "./js/supabase.js";
+    import { registerSW } from "./js/pwa.js";
+    registerSW();
+    const els = {
+      loader: document.getElementById('initLoader'),
+      main: document.getElementById('mainContent'),
+      url: document.getElementById('sbUrl'),
+      key: document.getElementById('sbKey'),
+      loc: document.getElementById('locSelect'),
+      btnTest: document.getElementById('btnTest'),
+      btnSave: document.getElementById('btnSave'),
+      status: document.getElementById('status')
+    };
+
+    window.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => {
+        els.loader.style.display = 'none';
+        els.main.style.display = 'flex';
+      }, 500);
+      const env = getEnv();
+      if(env.url) els.url.value = env.url;
+      if(env.key) els.key.value = env.key;
+    });
+
+    function clean(str) {
+      return (str || "").trim().replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\s+/g, '');
+    }
+
+    function showStatus(msg, type) {
+      els.status.textContent = msg;
+      els.status.className = `status-message ${type}`;
+      els.status.classList.remove('hidden');
+    }
+
+    els.btnTest.onclick = async () => {
+      const url = clean(els.url.value);
+      const key = clean(els.key.value);
+      els.url.value = url; els.key.value = key;
+
+      if(!url.includes('supabase.co')) return showStatus('URL inválida', 'error');
+      
+      els.btnTest.textContent = '...';
+      els.btnTest.disabled = true;
+      
+      const supabase = getClient({ url, key });
+
+      try {
+        if(!supabase) {
+          showStatus('Error cliente', 'error');
+          return;
+        }
+
+        // Updated: Removed strict filter, just get ID/Name
+        const { data, error } = await supabase.from('locations').select('id, name').order('name');
+        
+        if(error) throw error;
+        
+        els.loc.innerHTML = '<option value="">Selecciona...</option>';
+        
+        if (!data || data.length === 0) {
+           showStatus("Conectado, pero NO hay sucursales. Revisa la base de datos.", "warning");
+           return;
+        }
+
+        data.forEach(l => {
+          const opt = document.createElement('option');
+          opt.value = l.id; opt.textContent = l.name;
+          els.loc.appendChild(opt);
+        });
+
+        const previous = getEnv().locId;
+        if (previous) els.loc.value = previous;
+        
+        els.loc.disabled = false;
+        els.btnSave.disabled = false;
+        showStatus(`✓ Éxito (${data.length} sucursales)`, 'success');
+      } catch(e) {
+        // Specific error for RLS
+        if (e.message && e.message.includes("policy")) {
+             showStatus("Error RLS: Ejecuta el script SQL en Supabase", "error");
+        } else {
+             showStatus('Error: ' + e.message, 'error');
+        }
+      } finally {
+        els.btnTest.textContent = 'Conectar';
+        els.btnTest.disabled = false;
+      }
+    };
+
+    document.getElementById('configForm').onsubmit = (e) => {
+      e.preventDefault();
+      if(!els.loc.value) return;
+      saveEnv(els.url.value, els.key.value, els.loc.value, els.loc.options[els.loc.selectedIndex].text);
+      showStatus('Guardado', 'success');
+      setTimeout(() => location.href = 'index.html', 1000);
+    };
+    
+    document.getElementById('btnBack').onclick = () => location.href = 'index.html';
+  </script>
+</body>
+</html>
